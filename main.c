@@ -145,7 +145,7 @@ static void paste(struct object *object) {
         obj_text_size = ALIGN_UP(header->a_text, PAGE_SIZE);
     }
 
-    memcpy(text, obj_text, obj_text_size);
+    memcpy((char *)text + text_ptr, obj_text, header->a_text);
 
     text_ptr += obj_text_size;
 
@@ -157,7 +157,7 @@ static void paste(struct object *object) {
         obj_data_size = ALIGN_UP(header->a_data, PAGE_SIZE);
     }
 
-    memcpy(text, obj_data, obj_data_size);
+    memcpy((char *)data + data_ptr, obj_data, header->a_data);
 
     data_ptr += obj_data_size;
 
@@ -458,7 +458,7 @@ static int glue(struct object *object) {
             result = symbol->n_value;
         }
 
-        memcpy((char *)output + r->r_address, &result, length);
+        memcpy((char *)output + sizeof(struct exec) + r->r_address, &result, length);
     }
 
 out:
