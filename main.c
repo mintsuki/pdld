@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
 
 /* This is a hack because C90 does not have fixed width types */
 /* In main(), the sizes of these types are checked */
@@ -81,10 +82,11 @@ static int v = 0, nostdlib = 0, strip_all = 0, impure = 0;
 static void *output = NULL, *text = NULL, *data = NULL;
 static u32 text_size = 0, data_size = 0, bss_size = 0;
 static u32 text_ptr = 0, data_ptr = 0, bss_ptr = 0;
-struct object objects[MAX_OBJECTS];
-int object_count = 0;
+static struct object objects[MAX_OBJECTS];
+static int object_count = 0;
+static char *program_name = NULL;
 
-void apply_slides(struct object *object) {
+static void apply_slides(struct object *object) {
     int i;
 
     for (i = 0; i < object->symtab_count; i++) {
@@ -128,7 +130,7 @@ void apply_slides(struct object *object) {
     }
 }
 
-void paste(struct object *object) {
+static void paste(struct object *object) {
     struct exec *header;
     char *obj_text, *obj_data;
     u32 obj_text_size, obj_data_size, obj_bss_size;
@@ -168,7 +170,7 @@ void paste(struct object *object) {
     bss_ptr += obj_bss_size;
 }
 
-void strip_arg(int *argc, char *argv[], int index) {
+static void strip_arg(int *argc, char *argv[], int index) {
     int i;
 
     for (i = index; i < *argc; i++) {
@@ -178,7 +180,7 @@ void strip_arg(int *argc, char *argv[], int index) {
     *argc -= 1;
 }
 
-int initialise_gen(void *object, char *filename, int quiet) {
+static int initialise_gen(void *object, char *filename, int quiet) {
     int err = 0;
     struct exec *header;
     struct nlist *symtab;
@@ -192,7 +194,7 @@ int initialise_gen(void *object, char *filename, int quiet) {
 
     if (N_GETMAGIC(*header) != OMAGIC) {
         if (!quiet) {
-            fprintf(stderr, "pdld: error: %s is not a valid a.out object file.\n", filename);
+            fprintf(stderr, "%s: error: %s is not a valid a.out object file.\n", program_name, filename);
         }
         err = 1;
         goto out;
@@ -223,7 +225,7 @@ int initialise_gen(void *object, char *filename, int quiet) {
     strtab = (char *)object + strtab_off;
 
     if (object_count == MAX_OBJECTS) {
-        fprintf(stderr, "pdld: error: Too many objects\n");
+        fprintf(stderr, "%s: error: Too many objects\n", program_name);
         err = 1;
         goto out;
     }
@@ -245,7 +247,7 @@ out:
     return err;
 }
 
-u32 conv_dec(char *str, int max) {
+static u32 conv_dec(char *str, int max) {
     u32 value = 0;
     while (*str != ' ' && max-- > 0) {
         value *= 10;
@@ -254,8 +256,8 @@ u32 conv_dec(char *str, int max) {
     return value;
 }
 
-int initialise_archive(FILE *ar_file) {
-    int err = 0;
+static int initialise_archive(FILE *ar_file) {
+    int err = 0, old_errno;
     void *object = NULL;
 
     if (fseek(ar_file, 8, SEEK_SET) != 0) {
@@ -300,7 +302,10 @@ int initialise_archive(FILE *ar_file) {
 
 out_perror:
     err = 1;
-    perror("pdld: error");
+    old_errno = errno;
+    fprintf(stderr, "%s", program_name);
+    errno = old_errno;
+    perror(": error");
 
 out:
     if (object != NULL && err != 0) {
@@ -309,8 +314,8 @@ out:
     return err;
 }
 
-int initialise_object(char *filename) {
-    int err = 0;
+static int initialise_object(char *filename) {
+    int err = 0, old_errno;
     FILE *object_file = NULL;
     long object_size;
     void *object = NULL;
@@ -363,7 +368,10 @@ int initialise_object(char *filename) {
 
 out_perror:
     err = 1;
-    perror("pdld: error");
+    old_errno = errno;
+    fprintf(stderr, "%s", program_name);
+    errno = old_errno;
+    perror(": error");
 
 out:
     if (object_file != NULL) {
@@ -375,7 +383,7 @@ out:
     return err;
 }
 
-int get_symbol(struct object **obj_out, int *index, char *name) {
+static int get_symbol(struct object **obj_out, int *index, char *name) {
     int object_i, symbol_i;
 
     for (object_i = 0; object_i < object_count; object_i++) {
@@ -393,11 +401,11 @@ int get_symbol(struct object **obj_out, int *index, char *name) {
         }
     }
 
-    fprintf(stderr, "pdld: error: Undefined symbol: %s\n", name);
+    fprintf(stderr, "%s: error: Undefined symbol: %s\n", program_name, name);
     return 1;
 }
 
-int glue(struct object *object) {
+static int glue(struct object *object) {
     int err = 0, i;
 
     for (i = 0; i < object->trelocs_count; i++) {
@@ -421,7 +429,7 @@ int glue(struct object *object) {
         }
 
         if (baserel || jmptable || rel || copy) {
-            fprintf(stderr, "pdld: Unsupported relocation type\n");
+            fprintf(stderr, "%s: Unsupported relocation type\n", program_name);
             err = 1;
             goto out;
         }
@@ -457,8 +465,20 @@ out:
     return err;
 }
 
+void help(void) {
+    printf("Usage: %s [options...] [object/archives...]\n", program_name);
+    printf("Options:\n");
+    printf("  -o <filename>      Output file name (default: a.out)\n");
+    printf("  -N                 Generate impure executable\n");
+    printf("  -s                 Strip all (*)\n");
+    printf("  -nostdlib          Do not link against standard library (*)\n");
+    printf("  --verbose          Enable verbose mode\n");
+    printf("  -h, --help         Shows this help message\n");
+    printf(" (*) currently unimplemented\n");
+}
+
 int main(int argc, char *argv[]) {
-    int err = 0, i;
+    int err = 0, old_errno, i;
     struct exec *header;
     struct object *entry_obj;
     int entry_index;
@@ -466,11 +486,20 @@ int main(int argc, char *argv[]) {
     char *output_filename = "a.out";
     u32 output_size;
 
+    program_name = argv[0];
+
     /* Check fixed width type sizes */
     if (sizeof(u8) != 1 || sizeof(u16) != 2 || sizeof(u32) != 4) {
-        fprintf(stderr, "pdld: error: Fixed width types of wrong size");
+        fprintf(stderr, "%s: error: Fixed width types of wrong size", program_name);
         err = 1;
         goto out;
+    }
+
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            help();
+            goto out;
+        }
     }
 
     /* Find the verbose flag before everything else */
@@ -502,7 +531,7 @@ int main(int argc, char *argv[]) {
             }
         } else if (strcmp(argv[i], "-o") == 0) {
             if (i + 1 == argc) {
-                fprintf(stderr, "pdld: error: Output flag passed without output file name.\n");
+                fprintf(stderr, "%s: error: Output flag passed without output file name.\n", program_name);
                 err = 1;
                 goto out;
             }
@@ -516,10 +545,16 @@ int main(int argc, char *argv[]) {
                 i++;
                 continue;
             }
-            fprintf(stderr, "pdld: warning: Unrecognised option: %s\n", argv[i]);
+            fprintf(stderr, "%s: warning: Unrecognised option: %s\n", program_name, argv[i]);
         }
 
         strip_arg(&argc, argv, i);
+    }
+
+    if (argc == 1) {
+        fprintf(stderr, "%s: error: No input files\n", program_name);
+        err = 1;
+        goto out;
     }
 
     for (i = 1; i < argc; i++) {
@@ -578,7 +613,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (get_symbol(&entry_obj, &entry_index, "___start") == 1) {
-        fprintf(stderr, "pdld: error: Cannot find entry point\n");
+        fprintf(stderr, "%s: error: Cannot find entry point\n", program_name);
         err = 1;
         goto out;
     }
@@ -602,7 +637,10 @@ int main(int argc, char *argv[]) {
 
 out_perror:
     err = 1;
-    perror("pdld: error");
+    old_errno = errno;
+    fprintf(stderr, "%s", program_name);
+    errno = old_errno;
+    perror(": error");
 
 out:
     for (i = 0; i < object_count; i++) {
