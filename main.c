@@ -2,55 +2,54 @@
 #include <string.h>
 #include <stdlib.h>
 
-static int v = 0, nostdlib = 0, strip_all = 0, impure = 0;
-static unsigned long output_size, text_size = 0, data_size = 0, bss_size = 0;
-static void *output = NULL, *text = NULL, *data = NULL;
-static unsigned long text_ptr = 0, data_ptr = 0, bss_ptr = 0;
+/* This is a hack because C90 does not have fixed width types */
+/* In main(), the sizes of these types are checked */
+#define u8 unsigned char
+#define u16 unsigned short
+#define u32 unsigned int
+#define i8 signed char
+#define i16 short
+#define i32 int
 
-#define MAX_OBJECTS 256
+#define PAGE_SIZE 4096
+#define DIV_ROUNDUP(a, b) (((a) + ((b) - 1)) / (b))
+#define ALIGN_UP(x, a) (DIV_ROUNDUP((x), (a)) * (a))
 
 struct object {
     char *filename;
     void *raw;
-    long size;
     struct exec *header;
     struct relocation_info *trelocs, *drelocs;
     struct nlist *symtab;
     char *strtab;
     int symtab_count, trelocs_count, drelocs_count;
-    unsigned long text_slide, data_slide, bss_slide;
+    u32 text_slide, data_slide, bss_slide;
 };
 
-struct object objects[MAX_OBJECTS];
-int object_count = 0;
-
-#define DIV_ROUNDUP(a, b) (((a) + ((b) - 1)) / (b))
-#define ALIGN_UP(x, a) (DIV_ROUNDUP((x), (a)) * (a))
-
-#define PAGE_SIZE 4096
+#define MAX_OBJECTS 256
 
 struct exec {
-    unsigned int a_midmag;
-    unsigned int a_text;
-    unsigned int a_data;
-    unsigned int a_bss;
-    unsigned int a_syms;
-    unsigned int a_entry;
-    unsigned int a_trsize;
-    unsigned int a_drsize;
+    u32 a_midmag;
+    u32 a_text;
+    u32 a_data;
+    u32 a_bss;
+    u32 a_syms;
+    u32 a_entry;
+    u32 a_trsize;
+    u32 a_drsize;
 };
 
 struct nlist {
-    int n_strx;
-    unsigned char n_type;
-    char n_other;
-    short n_desc;
-    unsigned int n_value;
+    i32 n_strx;
+    u8 n_type;
+    i8 n_other;
+    i16 n_desc;
+    u32 n_value;
 };
 
 struct relocation_info {
-    int r_address;
-    unsigned int r_type;
+    i32 r_address;
+    u32 r_type;
 };
 
 #define N_GETMAGIC(exec) ((exec).a_midmag & 0xffff)
@@ -66,11 +65,31 @@ struct relocation_info {
 #define N_EXT 1
 #define N_TYPE 036
 
+struct ar_header {
+    char name[16];
+    char mtime[12];
+    char owner[6];
+    char group[6];
+    char mode[8];
+    char size[10];
+    char endsig[2];
+};
+
+/* Globals */
+
+static int v = 0, nostdlib = 0, strip_all = 0, impure = 0;
+static void *output = NULL, *text = NULL, *data = NULL;
+static u32 text_size = 0, data_size = 0, bss_size = 0;
+static u32 text_ptr = 0, data_ptr = 0, bss_ptr = 0;
+struct object objects[MAX_OBJECTS];
+int object_count = 0;
+
 void apply_slides(struct object *object) {
     int i;
+
     for (i = 0; i < object->symtab_count; i++) {
         struct nlist *symbol = &object->symtab[i];
-        unsigned long final_slide = 0;
+        u32 final_slide = 0;
 
         if (symbol->n_type != N_TEXT
          && symbol->n_type != N_DATA
@@ -95,11 +114,13 @@ void apply_slides(struct object *object) {
 
         symbol->n_value += final_slide;
     }
+
     for (i = 0; i < object->trelocs_count; i++) {
         struct relocation_info *rel = &object->trelocs[i];
 
         rel->r_address += object->text_slide;
     }
+
     for (i = 0; i < object->drelocs_count; i++) {
         struct relocation_info *rel = &object->drelocs[i];
 
@@ -110,7 +131,7 @@ void apply_slides(struct object *object) {
 void paste(struct object *object) {
     struct exec *header;
     char *obj_text, *obj_data;
-    unsigned long obj_text_size, obj_data_size, obj_bss_size;
+    u32 obj_text_size, obj_data_size, obj_bss_size;
 
     header = object->header;
 
@@ -157,14 +178,14 @@ void strip_arg(int *argc, char *argv[], int index) {
     *argc -= 1;
 }
 
-int initialise_gen(void *object, long object_size, char *filename, int quiet) {
+int initialise_gen(void *object, char *filename, int quiet) {
     int err = 0;
     struct exec *header;
     struct nlist *symtab;
     struct relocation_info *trelocs, *drelocs;
     char *strtab;
     int symtab_count, trelocs_count, drelocs_count;
-    unsigned int symtab_off, strtab_off, trelocs_off, drelocs_off;
+    u32 symtab_off, strtab_off, trelocs_off, drelocs_off;
     struct object *new_object;
 
     header = object;
@@ -211,7 +232,6 @@ int initialise_gen(void *object, long object_size, char *filename, int quiet) {
 
     new_object->filename = filename;
     new_object->raw = object;
-    new_object->size = object_size;
     new_object->header = header;
     new_object->trelocs = trelocs;
     new_object->drelocs = drelocs;
@@ -225,18 +245,8 @@ out:
     return err;
 }
 
-struct ar_header {
-    char name[16];
-    char mtime[12];
-    char owner[6];
-    char group[6];
-    char mode[8];
-    char size[10];
-    char endsig[2];
-};
-
-unsigned long conv_dec(char *str, int max) {
-    unsigned long value = 0;
+u32 conv_dec(char *str, int max) {
+    u32 value = 0;
     while (*str != ' ' && max-- > 0) {
         value *= 10;
         value += *str++ - '0';
@@ -254,7 +264,7 @@ int initialise_archive(FILE *ar_file) {
 
     for (;;) {
         struct ar_header header;
-        unsigned long size, size_aligned;
+        u32 size, size_aligned;
 
         if (fread(&header, sizeof(struct ar_header), 1, ar_file) != 1) {
             if (feof(ar_file) == 1) {
@@ -267,7 +277,7 @@ int initialise_archive(FILE *ar_file) {
         size_aligned = size % 2 ? size + 1 : size;
 
         if (v) {
-            fprintf(stderr, "Archiver: Processing file %.16s (size %lu)\n", header.name, size);
+            fprintf(stderr, "Archiver: Processing file %.16s (size %u)\n", header.name, size);
         }
 
         object = malloc(size_aligned);
@@ -279,7 +289,7 @@ int initialise_archive(FILE *ar_file) {
             goto out_perror;
         }
 
-        if (initialise_gen(object, size, ""/*name*/, 1) != 0) {
+        if (initialise_gen(object, ""/*name*/, 1) != 0) {
             free(object);
         }
 
@@ -347,7 +357,7 @@ int initialise_object(char *filename) {
         goto out_perror;
     }
 
-    err = initialise_gen(object, object_size, filename, 0);
+    err = initialise_gen(object, filename, 0);
 
     goto out;
 
@@ -393,7 +403,7 @@ int glue(struct object *object) {
     for (i = 0; i < object->trelocs_count; i++) {
         struct relocation_info *r = &object->trelocs[i];
         struct nlist *symbol;
-        long result;
+        i32 result;
 
         int symbolnum = r->r_type & 0xffffff;
         int pcrel = (r->r_type & (1 << 24)) >> 24;
@@ -435,7 +445,7 @@ int glue(struct object *object) {
         }
 
         if (pcrel) {
-            result = (long)symbol->n_value - (long)r->r_address;
+            result = (i32)symbol->n_value - r->r_address;
         } else {
             result = symbol->n_value;
         }
@@ -454,6 +464,14 @@ int main(int argc, char *argv[]) {
     int entry_index;
     FILE *output_file = NULL;
     char *output_filename = "a.out";
+    u32 output_size;
+
+    /* Check fixed width type sizes */
+    if (sizeof(u8) != 1 || sizeof(u16) != 2 || sizeof(u32) != 4) {
+        fprintf(stderr, "pdld: error: Fixed width types of wrong size");
+        err = 1;
+        goto out;
+    }
 
     /* Find the verbose flag before everything else */
     for (i = 1; i < argc; i++) {
@@ -516,9 +534,9 @@ int main(int argc, char *argv[]) {
     }
 
     if (v) {
-        fprintf(stderr, "Calculated text size: %lu\n", text_size);
-        fprintf(stderr, "Calculated data size: %lu\n", data_size);
-        fprintf(stderr, "Calculated bss size: %lu\n", bss_size);
+        fprintf(stderr, "Calculated text size: %u\n", text_size);
+        fprintf(stderr, "Calculated data size: %u\n", data_size);
+        fprintf(stderr, "Calculated bss size: %u\n", bss_size);
     }
 
     if (impure) {
