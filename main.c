@@ -269,7 +269,7 @@ static int initialise_archive(FILE *ar_file) {
         u32 size, size_aligned;
 
         if (fread(&header, sizeof(struct ar_header), 1, ar_file) != 1) {
-            if (feof(ar_file) == 1) {
+            if (feof(ar_file)) {
                 break;
             }
             goto out_perror;
@@ -321,7 +321,7 @@ static int initialise_object(char *filename) {
     void *object = NULL;
     char ar_magic[8];
 
-    object_file = fopen(filename, "r");
+    object_file = fopen(filename, "rb");
     if (object_file == NULL) {
         goto out_perror;
     }
@@ -624,7 +624,7 @@ int main(int argc, char *argv[]) {
     header->a_bss = bss_size;
     header->a_entry = entry_obj->symtab[entry_index].n_value;
 
-    output_file = fopen(output_filename, "w");
+    output_file = fopen(output_filename, "wb");
     if (output_file == NULL) {
         goto out_perror;
     }
