@@ -88,6 +88,15 @@ static struct object objects[MAX_OBJECTS];
 static int object_count = 0;
 static char *program_name = NULL;
 
+struct gr {
+    int relocations_count;
+    int relocations_max;
+    struct relocation_info *relocations;
+};
+
+static struct gr tgr = { 0, 64, NULL };
+static struct gr dgr = { 0, 64, NULL };
+
 static void apply_slides(struct object *object) {
     int i;
 
@@ -446,6 +455,42 @@ static void undf_collect(struct object *object) {
     }
 }
 
+static int add_relocation(struct gr *gr, struct relocation_info *r) {
+    int err = 0, old_errno;
+
+    if (gr->relocations == NULL) {
+        gr->relocations = malloc(gr->relocations_max * sizeof(struct relocation_info));
+        if (gr->relocations == NULL) {
+            goto out_perror;
+        }
+    }
+
+    if (gr->relocations_count >= gr->relocations_max) {
+        void *tmp;
+        gr->relocations_max *= 2;
+        tmp = realloc(gr->relocations, gr->relocations_max * sizeof(struct relocation_info));
+        if (tmp == NULL) {
+            goto out_perror;
+        }
+        gr->relocations = tmp;
+    }
+
+    gr->relocations[gr->relocations_count] = *r;
+    gr->relocations_count++;
+
+    goto out;
+
+out_perror:
+    err = 1;
+    old_errno = errno;
+    fprintf(stderr, "%s", program_name);
+    errno = old_errno;
+    perror(": error");
+
+out:
+    return err;
+}
+
 static int relocate(struct object *object, struct relocation_info *r, int is_data) {
     struct nlist *symbol;
     i32 result;
@@ -489,6 +534,11 @@ static int relocate(struct object *object, struct relocation_info *r, int is_dat
     if (pcrel) {
         result = (i32)symbol->n_value - r->r_address;
     } else {
+        struct relocation_info new_relocation;
+        new_relocation.r_address = r->r_address;
+        new_relocation.r_type = r->r_type & (3 << 25);
+        add_relocation(is_data ? &dgr : &tgr, &new_relocation);
+
         result = symbol->n_value;
     }
 
@@ -681,6 +731,8 @@ int main(int argc, char *argv[]) {
     header->a_data = data_size;
     header->a_bss = bss_size;
     header->a_entry = entry_obj->symtab[entry_index].n_value;
+    header->a_trsize = tgr.relocations_count * sizeof(struct relocation_info);
+    header->a_drsize = dgr.relocations_count * sizeof(struct relocation_info);
 
     output_file = fopen(output_filename, "wb");
     if (output_file == NULL) {
@@ -688,6 +740,18 @@ int main(int argc, char *argv[]) {
     }
 
     if (fwrite(output, output_size, 1, output_file) != 1) {
+        goto out_perror;
+    }
+
+    if (fwrite(tgr.relocations,
+               tgr.relocations_count * sizeof(struct relocation_info),
+               1, output_file) != 1) {
+        goto out_perror;
+    }
+
+    if (fwrite(dgr.relocations,
+               dgr.relocations_count * sizeof(struct relocation_info),
+               1, output_file) != 1) {
         goto out_perror;
     }
 
@@ -703,6 +767,12 @@ out_perror:
 out:
     for (i = 0; i < object_count; i++) {
         free(objects[i].raw);
+    }
+    if (tgr.relocations != NULL) {
+        free(tgr.relocations);
+    }
+    if (dgr.relocations != NULL) {
+        free(dgr.relocations);
     }
     if (output != NULL) {
         free(output);
