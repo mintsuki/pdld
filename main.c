@@ -56,6 +56,8 @@ struct relocation_info {
 #define N_GETMAGIC(exec) ((exec).a_midmag & 0xffff)
 
 #define OMAGIC 0407
+#define NMAGIC 0410
+#define ZMAGIC 0413
 
 #define N_UNDF 0
 #define N_ABS 2
@@ -93,13 +95,13 @@ static void apply_slides(struct object *object) {
         struct nlist *symbol = &object->symtab[i];
         u32 final_slide = 0;
 
-        if (symbol->n_type != N_TEXT
-         && symbol->n_type != N_DATA
-         && symbol->n_type != N_BSS) {
+        if ((symbol->n_type & N_TYPE) != N_TEXT
+         && (symbol->n_type & N_TYPE) != N_DATA
+         && (symbol->n_type & N_TYPE) != N_BSS) {
             continue;
         }
 
-        switch (symbol->n_type) {
+        switch (symbol->n_type & N_TYPE) {
             case N_BSS:
                 final_slide += text_size;
                 final_slide += data_size;
@@ -383,7 +385,7 @@ out:
     return err;
 }
 
-static int get_symbol(struct object **obj_out, int *index, char *name) {
+static int get_symbol(struct object **obj_out, int *index, char *name, int quiet) {
     int object_i, symbol_i;
 
     for (object_i = 0; object_i < object_count; object_i++) {
@@ -393,16 +395,55 @@ static int get_symbol(struct object **obj_out, int *index, char *name) {
 
             char *symname = object->strtab + sym->n_strx;
 
+            if ((sym->n_type & N_EXT) == 0) {
+                continue;
+            }
+
+            if ((sym->n_type & N_TYPE) != N_TEXT
+             && (sym->n_type & N_TYPE) != N_DATA
+             && (sym->n_type & N_TYPE) != N_BSS
+             && (sym->n_type & N_TYPE) != N_ABS) {
+                continue;
+            }
+
             if (strcmp(symname, name) == 0) {
-                *obj_out = object;
-                *index = symbol_i;
+                if (obj_out) {
+                    *obj_out = object;
+                }
+                if (index) {
+                    *index = symbol_i;
+                }
                 return 0;
             }
         }
     }
 
-    fprintf(stderr, "%s: error: Undefined symbol: %s\n", program_name, name);
+    if (!quiet) {
+        fprintf(stderr, "%s: error: Undefined symbol: %s\n", program_name, name);
+    }
     return 1;
+}
+
+static void undf_collect(struct object *object) {
+    int i;
+
+    for (i = 0; i < object->symtab_count; i++) {
+        struct nlist *sym = &object->symtab[i];
+        char *symname = object->strtab + sym->n_strx;
+
+        if ((sym->n_type & N_TYPE) != N_UNDF || sym->n_value == 0) {
+            continue;
+        }
+
+        if (get_symbol(NULL, NULL, symname, 1) == 0) {
+            continue;
+        }
+
+        bss_size += sym->n_value;
+        sym->n_type = N_BSS | N_EXT;
+        sym->n_value = text_size + data_size + object->bss_slide + bss_ptr;
+        bss_ptr += sym->n_value;
+    }
 }
 
 static int glue(struct object *object) {
@@ -441,7 +482,7 @@ static int glue(struct object *object) {
 
             symname = object->strtab + object->symtab[symbolnum].n_strx;
 
-            err = get_symbol(&symobj, &symindex, symname);
+            err = get_symbol(&symobj, &symindex, symname, 0);
             if (err != 0) {
                 err = 1;
                 goto out;
@@ -606,19 +647,27 @@ int main(int argc, char *argv[]) {
     }
 
     for (i = 0; i < object_count; i++) {
+        undf_collect(&objects[i]);
+    }
+
+    if (!impure) {
+        bss_size = ALIGN_UP(bss_size, PAGE_SIZE);
+    }
+
+    for (i = 0; i < object_count; i++) {
         if (glue(&objects[i]) != 0) {
             err = 1;
             goto out;
         }
     }
 
-    if (get_symbol(&entry_obj, &entry_index, "___start") == 1) {
+    if (get_symbol(&entry_obj, &entry_index, "___start", 0) == 1) {
         fprintf(stderr, "%s: error: Cannot find entry point\n", program_name);
         err = 1;
         goto out;
     }
 
-    header->a_midmag = OMAGIC;
+    header->a_midmag = impure ? OMAGIC : ZMAGIC;
     header->a_text = text_size;
     header->a_data = data_size;
     header->a_bss = bss_size;
