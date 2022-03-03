@@ -446,64 +446,73 @@ static void undf_collect(struct object *object) {
     }
 }
 
-static int glue(struct object *object) {
-    int err = 0, i;
+static int relocate(struct object *object, struct relocation_info *r, int is_data) {
+    struct nlist *symbol;
+    i32 result;
 
-    for (i = 0; i < object->trelocs_count; i++) {
-        struct relocation_info *r = &object->trelocs[i];
-        struct nlist *symbol;
-        i32 result;
+    int symbolnum = r->r_type & 0xffffff;
+    int pcrel = (r->r_type & (1 << 24)) >> 24;
+    int ext = (r->r_type & (1 << 27)) >> 27;
+    int baserel = (r->r_type & (1 << 28)) >> 28;
+    int jmptable = (r->r_type & (1 << 29)) >> 29;
+    int rel = (r->r_type & (1 << 30)) >> 30;
+    int copy = (r->r_type & (1 << 31)) >> 31;
 
-        int symbolnum = r->r_type & 0xffffff;
-        int pcrel = (r->r_type & (1 << 24)) >> 24;
-        int ext = (r->r_type & (1 << 27)) >> 27;
-        int baserel = (r->r_type & (1 << 28)) >> 28;
-        int jmptable = (r->r_type & (1 << 29)) >> 29;
-        int rel = (r->r_type & (1 << 30)) >> 30;
-        int copy = (r->r_type & (1 << 31)) >> 31;
-
-        int length = (r->r_type & (3 << 25)) >> 25;
-        switch (length) {
-            case 0: length = 1; break;
-            case 1: length = 2; break;
-            case 2: length = 4; break;
-        }
-
-        if (baserel || jmptable || rel || copy) {
-            fprintf(stderr, "%s: Unsupported relocation type\n", program_name);
-            err = 1;
-            goto out;
-        }
-
-        if (ext) {
-            struct object *symobj;
-            int symindex;
-            char *symname;
-
-            symname = object->strtab + object->symtab[symbolnum].n_strx;
-
-            err = get_symbol(&symobj, &symindex, symname, 0);
-            if (err != 0) {
-                err = 1;
-                goto out;
-            }
-
-            symbol = &symobj->symtab[symindex];
-        } else {
-            symbol = &object->symtab[symbolnum];
-        }
-
-        if (pcrel) {
-            result = (i32)symbol->n_value - r->r_address;
-        } else {
-            result = symbol->n_value;
-        }
-
-        memcpy((char *)output + sizeof(struct exec) + r->r_address, &result, length);
+    int length = (r->r_type & (3 << 25)) >> 25;
+    switch (length) {
+        case 0: length = 1; break;
+        case 1: length = 2; break;
+        case 2: length = 4; break;
     }
 
-out:
-    return err;
+    if ((is_data && pcrel) || baserel || jmptable || rel || copy) {
+        fprintf(stderr, "%s: Unsupported relocation type\n", program_name);
+        return 1;
+    }
+
+    if (ext) {
+        struct object *symobj;
+        int symindex;
+        char *symname;
+
+        symname = object->strtab + object->symtab[symbolnum].n_strx;
+
+        if (get_symbol(&symobj, &symindex, symname, 0) != 0) {
+            return 1;
+        }
+
+        symbol = &symobj->symtab[symindex];
+    } else {
+        symbol = &object->symtab[symbolnum];
+    }
+
+    if (pcrel) {
+        result = (i32)symbol->n_value - r->r_address;
+    } else {
+        result = symbol->n_value;
+    }
+
+    memcpy((char *)output + sizeof(struct exec) + r->r_address, &result, length);
+
+    return 0;
+}
+
+static int glue(struct object *object) {
+    int i;
+
+    for (i = 0; i < object->trelocs_count; i++) {
+        if (relocate(object, &object->trelocs[i], 0) != 0) {
+            return 1;
+        }
+    }
+
+    for (i = 0; i < object->drelocs_count; i++) {
+        if (relocate(object, &object->drelocs[i], 1) != 0) {
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 void help(void) {
