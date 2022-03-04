@@ -289,6 +289,11 @@ static int initialise_archive(FILE *ar_file) {
         size = conv_dec(header.size, 10);
         size_aligned = size % 2 ? size + 1 : size;
 
+        if (memcmp(header.name, "__.SYMDEF", 9) == 0) {
+            fseek(ar_file, size_aligned, SEEK_CUR);
+            continue;
+        }
+
         if (v) {
             fprintf(stderr, "Archiver: Processing file %.16s (size %u)\n", header.name, size);
         }
@@ -532,12 +537,19 @@ static int relocate(struct object *object, struct relocation_info *r, int is_dat
     }
 
     if (pcrel) {
-        result = (i32)symbol->n_value - r->r_address;
+        result = (i32)symbol->n_value - (r->r_address + length);
     } else {
-        struct relocation_info new_relocation;
-        new_relocation.r_address = r->r_address;
-        new_relocation.r_type = r->r_type & (3 << 25);
-        add_relocation(is_data ? &dgr : &tgr, &new_relocation);
+        if ((symbol->n_type & N_TYPE) == N_BSS
+         || (symbol->n_type & N_TYPE) == N_DATA
+         || (symbol->n_type & N_TYPE) == N_TEXT) {
+            struct relocation_info new_relocation;
+            new_relocation.r_address = r->r_address;
+            if (is_data) {
+                new_relocation.r_address -= text_size;
+            }
+            new_relocation.r_type = r->r_type & (3 << 25);
+            add_relocation(is_data ? &dgr : &tgr, &new_relocation);
+        }
 
         result = symbol->n_value;
     }
