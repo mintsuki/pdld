@@ -290,7 +290,9 @@ static int initialise_archive(FILE *ar_file) {
         size_aligned = size % 2 ? size + 1 : size;
 
         if (memcmp(header.name, "__.SYMDEF", 9) == 0) {
-            fseek(ar_file, size_aligned, SEEK_CUR);
+            /* size should probably be size_aligned but binutils 2.14a seems */
+            /* to maybe be bugged and not pad __.SYMDEF? */
+            fseek(ar_file, size, SEEK_CUR);
             continue;
         }
 
