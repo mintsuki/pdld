@@ -126,6 +126,15 @@ static void apply_slides(struct object *object) {
         }
 
         symbol->n_value += final_slide;
+
+        switch (symbol->n_type & N_TYPE) {
+            case N_BSS:
+                symbol->n_value -= object->header->a_data;
+                /* FALLTHRU */
+            case N_DATA:
+                symbol->n_value -= object->header->a_text;
+                break;
+        }
     }
 
     for (i = 0; i < object->trelocs_count; i++) {
